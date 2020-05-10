@@ -15,6 +15,7 @@ DISCONNECT_MESSAGE = "con-res 0xFE"
 CONNECTED_IP = set()
 CONNECTED_SOCKETS = set()
 MSG_COUNT = 0
+MAX_PACKETS = 25
 # SOCKET VARIABLE
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server_socket.bind(ADDR)
@@ -127,5 +128,7 @@ def handle_client(conn, addr):
             MSG_COUNT += 1
             send(conn, f"res-{MSG_COUNT}=I am server")
             MSG_COUNT += 1
+
+        time.sleep(1/MAX_PACKETS)
 
 start_server()
