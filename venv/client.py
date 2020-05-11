@@ -104,8 +104,12 @@ def connect_to_server():
         try:
             client.connect(ADDR)
             print("Connected to server socket")
-            # init_handshake()
-            bypass_handshake()
+
+            # NORMAL CONNECTION
+            init_handshake()
+
+            # "HACK" CONNECTION
+            # bypass_handshake()
             break
         except ConnectionRefusedError:
             print(f"Connection was refused, server may be down or on a different address")
