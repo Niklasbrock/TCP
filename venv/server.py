@@ -2,23 +2,29 @@ import socket
 import threading
 from datetime import datetime
 import time
+import re
 
 # SERVER CONSTANTS
 PORT = 1337
 # Since this is run locally, I can use this to get my local ip address
-SERVER = socket.gethostbyname(socket.gethostname())
-ADDR = (SERVER, PORT)
+SERVER_IP = socket.gethostbyname(socket.gethostname())
+ADDR = (SERVER_IP, PORT)
 # Number of bytes for the incoming headers
 HEADER = 8
 FORMAT = 'utf-8'
-DISCONNECT_MESSAGE = "con-res 0xFE"
-CONNECTED_IP = set()
-CONNECTED_SOCKETS = set()
-MSG_COUNT = 0
-MAX_PACKETS = 25
 # SOCKET VARIABLE
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server_socket.bind(ADDR)
+
+# READ CONFIG FOR CONSTANT VALUES
+config = open("opt.config", "r")
+
+lines = config.readlines()
+for line in lines:
+    if (line.startswith("MAX_PACKETS")):
+        MAX_PACKETS = int(line.replace("MAX_PACKETS : ", ""))
+
+config.close()
 
 def log(conn, str):
     # "a" for append
@@ -26,26 +32,20 @@ def log(conn, str):
     log.write(f"[{conn}] {datetime.now()} {str}\n")
     log.close()
 
+# TODO Make handshake check for the Protocol.
 def start_server():
     # Listen on the server socket
     server_socket.listen()
-    print(f"{datetime.now()} [LISTENING] Server is listening on {SERVER}")
+    print(f"{datetime.now()} [LISTENING] Server is listening on {SERVER_IP}")
     while True:
         conn, addr = server_socket.accept()
         # Receive first message from client
         client_request_msg = receive_msg(conn)
         log(addr, client_request_msg)
-        # Check if client IP addr is already connected TODO: doesnt work, loop through set instead.
-        if CONNECTED_IP.__contains__(client_request_msg):
-            # Send deny message if it is / Handshake step 2
-            reply_message = f"com-{MSG_COUNT} deny {addr[0]}"
-            send(conn, reply_message)
-            # Log handshake step 1
-            log(ADDR, reply_message)
-            print(f"[CLIENT]: {receive_msg(conn)}")
-        else:
+
+        if valid_IP(client_request_msg.replace("com-0 ", "")):
             # Send accept message if it's not / Handshake step 2
-            reply_message = f"com-{MSG_COUNT} accept {addr[0]}"
+            reply_message = f"com-0 accept {SERVER_IP}"
             send(conn, reply_message)
             # Log handshake step 2
             log(ADDR, reply_message)
@@ -56,7 +56,21 @@ def start_server():
             client_thread = threading.Thread(target=handle_client, args=(conn, addr))
             client_thread.start()
             print(f"[ACTIVE CONNECTIONS] {threading.activeCount() - 1}")
+        else:
+            # Send deny message if it is not correct IP / Handshake step 2
+            reply_message = f"com-0 deny {SERVER_IP}"
+            send(conn, reply_message)
+            # Log handshake step 1
+            log(ADDR, reply_message)
+            print(f"[CLIENT]: {receive_msg(conn)}")
 
+def valid_IP(string):
+    try:
+        # Check for valid IP address
+        socket.inet_aton(string)
+        return True
+    except socket.error:
+        return False
 
 def send(conn, msg):
     # Define a new variable and encode it to bytes with given FORMAT constant
@@ -79,14 +93,8 @@ def receive_msg(conn):
         return conn.recv(msg_length).decode(FORMAT)
 
 def handle_client(conn, addr):
-    global MSG_COUNT
+    msg_count = 0
     print(f"{threading.currentThread()} started")
-
-    # Add IP addr to CONNECTED_IP set
-    CONNECTED_IP.add(addr)
-
-    # Add Socket to CONNECTED_SOCKETS set
-    CONNECTED_SOCKETS.add(conn)
     print(f"{datetime.now()} [NEW CONNECTION] {addr} connected.")
 
     # Start main messaging loop
@@ -96,38 +104,35 @@ def handle_client(conn, addr):
         conn.settimeout(4)
         try:
             msg = receive_msg(conn)
+            # If the received message does not match the tolerance disconnect reply
+            # or the heartbeat message "con-h 0x00"
+            # then we print to console.
+            if msg != "con-res 0xFF" and msg != "con-h 0x00":
+                print(f"[{addr}] {msg}")
+                # If the received message count minus the last sent message is not 1, then raise exception
+                # I use re.search to look between the two substrings "msg-" and "=" for the count
+                received_msg_count = int(re.search('msg-(.*)=', msg).group(1))
+                if received_msg_count - msg_count != 1 and received_msg_count != 0:
+                    raise ConnectionRefusedError
+                # Set the new message count to the received plus 1
+                msg_count = received_msg_count + 1
+                
+                send(conn, f"res-{msg_count}=I am server")
+
         # This code is then run in the case of a timeout
         except socket.timeout:
-            send(conn, "You have been kicked due to inactivity")
-            send(conn, DISCONNECT_MESSAGE)
+            send(conn, "con-res 0xFE")
             receive_msg(conn)
-            CONNECTED_IP.discard(addr)
-            CONNECTED_SOCKETS.discard(conn)
             print(f"{datetime.now()} [{addr}] was disconnected due to inactivity")
             break
         # This code is run if the client terminates the connection
         except ConnectionResetError:
-            CONNECTED_IP.discard(addr)
-            CONNECTED_SOCKETS.discard(conn)
             print(f"{datetime.now()} [{addr}] terminated the connection")
             break
-
-        # If the received message does not match the DISCONNECT_MESSAGE constant
-        # or the heartbeat message "con-h 0x00"
-        # then we print to console, and send the received message to other connected clients.
-        if msg != DISCONNECT_MESSAGE and msg != "con-h 0x00":
-            print(f"[{addr}] msg-{MSG_COUNT}={msg}")
-            for conns in CONNECTED_SOCKETS:
-                # Making sure not to send the message back to the sender.
-                if conns != conn:
-                    send(conns, f"[{addr}] msg-{MSG_COUNT}={msg}")
-
-        # Incrementing the message count, including the responses from server.
-        # Ignoring the heartbeat messages.
-        if msg != "con-h 0x00":
-            MSG_COUNT += 1
-            send(conn, f"res-{MSG_COUNT}=I am server")
-            MSG_COUNT += 1
+        except ConnectionRefusedError:
+            send(conn, "con-res 0xFE")
+            print(f"{datetime.now()} [{addr}] sent illegal message count")
+            break
 
         time.sleep(1/MAX_PACKETS)
 

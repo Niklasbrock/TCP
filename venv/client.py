@@ -3,6 +3,7 @@ from datetime import datetime
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+import re
 
 # CLIENT CONSTANTS
 SERVER = socket.gethostbyname(socket.gethostname())
@@ -10,22 +11,26 @@ PORT = 1337
 ADDR = (SERVER, PORT)
 HEADER = 8
 FORMAT = 'utf-8'
-DISCONNECT_MESSAGE = "con-res 0xFE"
 DDOS_MESSAGE = "can you handle this?"
 LAST_MESSAGE_TIME = datetime.now()
+MSG_COUNT = 0
+# A means to be able to stop while loops in other threads
+ACTIVE = True
 
+# Default these to false, then check config for true
+KEEP_ALIVE = False
+DDOS_ACTIVE = False
 # READ CONFIG FOR CONSTANT VALUES
 config = open("opt.config", "r")
 
-KEEP_ALIVE = False
-if config.readline().replace("KEEP_ALIVE : ","").strip() == "True":
-    KEEP_ALIVE = True
-
-DDOS_ACTIVE = False
-if config.readline().replace("DDOS_ACTIVE : ","").strip() == "True":
-    DDOS_ACTIVE = True
-
-DDOS_AMOUNT = int(config.readline().replace("DDOS_AMOUNT : ", ""))
+lines = config.readlines()
+for line in lines:
+    if (line.startswith("KEEP_ALIVE : True")):
+        KEEP_ALIVE = True
+    if (line.startswith("DDOS_ACTIVE : True")):
+        DDOS_ACTIVE = True
+    if (line.startswith("DDOS_AMOUNT")):
+        DDOS_AMOUNT = int(line.replace("DDOS_AMOUNT : ", ""))
 
 config.close()
 
@@ -53,27 +58,43 @@ def receive_msg():
         return client.recv(msg_length).decode(FORMAT)
 
 def listen():
-    while True:
+    global ACTIVE, MSG_COUNT
+    while ACTIVE:
         try:
             msg = receive_msg()
+            if msg == "con-res 0xFE":
+                # Protocol response to disconnect
+                send("con-res 0xFF")
+                client.close()
+                ACTIVE = False
+                raise ConnectionResetError
+
+            # If the received message count minus the last sent message is not 1, then raise exception
+            # I use re.search to look between the two substrings "res-" and "=" for the count
+            received_msg_count = int(re.search('res-(.*)=', msg).group(1))
+            if received_msg_count - MSG_COUNT != 1 and received_msg_count != 0:
+                raise ConnectionResetError
+
+            # Set the new message count to the received plus 1
+            MSG_COUNT = received_msg_count + 1
+
         except ConnectionResetError:
             break
-        if msg == DISCONNECT_MESSAGE:
-            # Protocol response to disconnect
-            send("con-res 0xFF")
-            client.close()
-            break
+
         print(msg)
         # Simply for performance
         time.sleep(0.1)
 
 def talk():
-    global LAST_MESSAGE_TIME
-    while True:
+    global LAST_MESSAGE_TIME, ACTIVE, MSG_COUNT
+    while ACTIVE:
         print("[INPUT]:")
-        msg = input()
-        send(msg)
-        LAST_MESSAGE_TIME = datetime.now()
+        try:
+            msg = input()
+            send(f"msg-{MSG_COUNT}={msg}")
+            LAST_MESSAGE_TIME = datetime.now()
+        except OSError:
+            print("Connection no longer active")
 
 def heartbeat():
     global LAST_MESSAGE_TIME
@@ -119,24 +140,25 @@ def connect_to_server():
 # Asks server if the client ip can join
 def init_handshake():
     # Handshake step 1
-    send(socket.gethostbyname(socket.gethostname()))
+    send("com-0 " + socket.gethostbyname(socket.gethostname()))
     print(f"Sending request to join from [{socket.gethostbyname(socket.gethostname())}]")
     reply_msg = receive_msg()
     print(f"[SERVER] {reply_msg}")
-    if reply_msg.__contains__("accept"):
+    if reply_msg.startswith("com-0 accept ") and valid_IP(reply_msg.replace("com-0 accept ", "")):
         # Handshake step 3
-        send("accept")
+        send("com-0 accept")
         listen_thread = threading.Thread(target=listen).start()
         heartbeat_thread = threading.Thread(target=heartbeat).start()
         ddos_thread = threading.Thread(target=DDOS).start()
         talk()
 
-    elif reply_msg.__contains__("deny"):
+    else:
         # Handshake step 3
-        send("deny")
+        send("com-0 deny")
         print("Connection denied")
         client.close()
 
+# DEPRECATED
 # Doesn't ask if ip can join. Just sends "accept"
 def bypass_handshake():
     send("accept")
@@ -144,5 +166,14 @@ def bypass_handshake():
     heartbeat_thread = threading.Thread(target=heartbeat).start()
     ddos_thread = threading.Thread(target=DDOS).start()
     talk()
+
+def valid_IP(string):
+    try:
+        # Check for valid IP address
+        socket.inet_aton(string)
+        return True
+    except socket.error:
+        return False
+
 
 connect_to_server()
