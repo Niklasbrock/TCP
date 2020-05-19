@@ -32,7 +32,6 @@ def log(conn, str):
     log.write(f"[{conn}] {datetime.now()} {str}\n")
     log.close()
 
-# TODO Make handshake check for the Protocol.
 def start_server():
     # Listen on the server socket
     server_socket.listen()
@@ -43,7 +42,7 @@ def start_server():
         client_request_msg = receive_msg(conn)
         log(addr, client_request_msg)
 
-        if valid_IP(client_request_msg.replace("com-0 ", "")):
+        if client_request_msg.startswith("com-0") and valid_IP(client_request_msg.replace("com-0 ", "")):
             # Send accept message if it's not / Handshake step 2
             reply_message = f"com-0 accept {SERVER_IP}"
             send(conn, reply_message)
@@ -55,6 +54,7 @@ def start_server():
             print(f"[CLIENT]: {client_reply_message}")
             client_thread = threading.Thread(target=handle_client, args=(conn, addr))
             client_thread.start()
+            # Minus 1 because of main thread
             print(f"[ACTIVE CONNECTIONS] {threading.activeCount() - 1}")
         else:
             # Send deny message if it is not correct IP / Handshake step 2
@@ -112,7 +112,7 @@ def handle_client(conn, addr):
                 # If the received message count minus the last sent message is not 1, then raise exception
                 # I use re.search to look between the two substrings "msg-" and "=" for the count
                 received_msg_count = int(re.search('msg-(.*)=', msg).group(1))
-                if received_msg_count - msg_count != 1 and received_msg_count != 0:
+                if received_msg_count - msg_count != 1 and received_msg_count != 0 and received_msg_count !=1:
                     raise ConnectionRefusedError
                 # Set the new message count to the received plus 1
                 msg_count = received_msg_count + 1
@@ -134,6 +134,7 @@ def handle_client(conn, addr):
             print(f"{datetime.now()} [{addr}] sent illegal message count")
             break
 
+        # Making sure the thread doesn't handle more than MAX_PACKETS per sec
         time.sleep(1/MAX_PACKETS)
 
 start_server()

@@ -79,6 +79,7 @@ def listen():
             MSG_COUNT = received_msg_count + 1
 
         except ConnectionResetError:
+            print("Lost Connection")
             break
 
         print(msg)
@@ -94,7 +95,7 @@ def talk():
             send(f"msg-{MSG_COUNT}={msg}")
             LAST_MESSAGE_TIME = datetime.now()
         except OSError:
-            print("Connection no longer active")
+            print("Terminating program")
 
 def heartbeat():
     global LAST_MESSAGE_TIME
